@@ -28,8 +28,8 @@ train <- read_csv("train.csv")
 test <- read_csv("test.csv")
 ```
 
-# First, I'm Combining the two datasets to perform cleaning
-
+# First, I'm Combining the two datasets to perform some cleaning. 
+* note: technically, you're not supposed to do any processing before splitting  data.
 ```{r rBind}
 x <- rbind(train%>%select(-target), test)
 ```
@@ -38,8 +38,11 @@ x <- rbind(train%>%select(-target), test)
 x <- x %>%
   mutate(text = str_to_lower(text),
          text = gsub("http[^[:space:]]*", "", text),
-         youTube = str_detect(text, "youtube"),
-         mentions = str_detect(text, "@"))
+         youTube = if_else(str_detect(text, "youtube"), 1, 0),
+         mentions = if_else(str_detect(text, "@"), 1, 0),
+         text = stemDocument(text, language = "english"), 
+         text = removePunctuation(text),
+         text = str_trim(stripWhitespace(text)))
 ```
 
 ```{r countwords}
@@ -55,7 +58,6 @@ for (i in length(emojis)) {
  x <- x %>%
   mutate(text = gsub(emojis[i], "", text, perl = T)) 
 }
-
 ```
 
 ```{r removeStopWords}
@@ -76,6 +78,25 @@ x <- x %>%
   left_join(get_sentiments(), by= c("word" = "word"))
 ```
 
+```{r trainSwitch}
+xTrain <- x %>%
+  filter(!duplicated(id)) %>%
+  select(id, youTube, mentions, numStrings, numWords, sentence) %>%
+  right_join(train %>% select(id, keyword, location, target), by = "id") %>%
+  mutate(location = as.factor(location), keyword = as.factor(keyword)) %>%
+  rename(text = sentence) %>%
+  filter(!is.na(text))
+```
+
+```{r testSwitch}
+xTest <- x %>%
+  filter(!duplicated(id)) %>%
+  select(id, youTube, mentions, numStrings, numWords, sentence) %>%
+  right_join(test %>% select(id, keyword, location), by = "id") %>%
+  mutate(location = as.factor(location), keyword = as.factor(keyword)) %>%
+  rename(text = sentence) %>%
+  filter(!is.na(text))
+```
 
 ```{r desc__1}
 # df <- x %>%
@@ -95,7 +116,7 @@ wordcloud2(df)
 ```
 
 ```{r desc__2}
-df <- x %>%
+df <- xTrain %>%
   group_by(location) %>%
   summarise(n=n(), one = sum(target == 1), zero = sum(target == 0), 
             disasterRatio = one / (one + zero)) %>%
@@ -116,118 +137,62 @@ df <- x %>%
   arrange(desc(disasterRatio))
 ```
 
-# Now, let's try corpus views of the database
-```{r}
-corpTrain <- Corpus(VectorSource(train$text))
-corpTest <- Corpus(VectorSource(test$text))
-corpX <- Corpus(VectorSource(x$sentence))
+# Building the model
+
+```{r classNames}
+classNames <- c(1, 0)
 ```
 
-* Next we develop a function to cleanup the corpus object.
-```{r contractions}
-contractions_1 = c("ain't","aren't","can't","can't've","'cause", 
-                   "could've","couldn't","couldn't've","didn't",
-                   "doesn't","don't","hadn't","hadn't've","hasn't",
-                   "haven't","he'd","he'd've","he'll","he'll've",
-                   "he's","how'd","how'd'y","how'll","how's","I'd",
-                   "I'd've","I'll","I'll've","I'm","I've","isn't",
-                   "it'd","it'd've","it'll","it'll've","it's","let's",
-                   "ma'am","mayn't","might've","mightn't","mightn't've",
-                   "must've","mustn't","mustn't've","needn't","needn't've",
-                   "o'clock","oughtn't","oughtn't've","shan't","sha'n't",
-                   "shan't've","she'd","she'd've","she'll","she'll've",
-                   "she's","should've","shouldn't","shouldn't've","so've",
-                   "so's","that'd","that'd've","that's","there'd","there'd've",
-                   "there's","they'd","they'd've","they'll","they'll've",
-                   "they're","they've","to've","wasn't","we'd","we'd've",
-                   "we'll","we'll've","we're","we've","weren't","what'll",
-                   "what'll've","what're","what's","what've","when's",
-                   "when've","where'd","where's","where've","who'll",
-                   "who'll've","who's","who've","why's","why've","will've",
-                   "won't","won't've","would've","wouldn't","wouldn't've",
-                   "y'all","y'all'd","y'all'd've","y'all're","y'all've",
-                   "you'd","you'd've","you'll","you'll've","you're","you've")
+```{r textVectorizer}
+num_words <- nrow(x %>% filter(!duplicated(word))) + 1
+max_length <- 140 
+# 140 is the maximum length for a tweet when the data was collected
+text_vectorization <- 
+  layer_text_vectorization(max_tokens = num_words, 
+                           output_sequence_length = max_length)
 
-contractions_2 = c( "am not","are not","cannot","cannot have","because",
-                    "could have","could not","could not have","did not",
-                    "does not","do not","had not","had not have","has not",
-                    "have not","he would","he would have","he will",
-                    "he will have","he is","how did","how do you","how will",
-                    "how is","I would","I would have","I will","I will have",
-                    "I am","I have","is not","it would","it would have",
-                    "it will","it will have","it is","let us","madam",
-                    "may not","might have","might not","might not have",
-                    "must have","must not","must not have","need not",
-                    "need not have","of the clock","ought not",
-                    "ought not have","shall not","shall not","shall not have",
-                    "she would","she would have","she will","she will have",
-                    "she is","should have","should not","should not have",
-                    "so have","so is","that would","that would have",
-                    "that is","there would","there would have","there is",
-                    "they would","they would have","they will",
-                    "they will have","they are","they have","to have","was not",
-                    "we would","we would have","we will","we will have",
-                    "we are","we have","were not","what will",
-                    "what will have","what are","what is","what have",
-                    "when is","when have","where did","where is","where have",
-                    "who will","who will have","who is","who have","why is",
-                    "why have","will have","will not","will not have",
-                    "would have","would not","would not have","you all",
-                    "you all would","you all would have","you all are",
-                    "you all have","you would","you would have","you will",
-                    "you will have","you are","you have")
+text_vectorization %>% adapt(xTrain$text)
 
-contractions <- tibble(contractions_1, contractions_2)
-names(contra) <- c("contraction", "expanded")
+get_vocabulary(text_vectorization)
+text_vectorization(matrix(xTrain$text[1], ncol = 1))
 ```
 
-```{r corpusCleanUpFunction}
-cleanUp <- function(c){
-  c <- tm_map(c, content_transformer(str_to_lower))
-  c <- tm_map(
-    c, content_transformer(
-      function(x){str_replace(x, pattern =emojis, replacement = "")}))
-  c <- tm_map(
-    c, content_transformer(
-      function(x){replace_contraction(x, contraction = contractions)}))
-    c <- tm_map(c, content_transformer(removePunctuation), ucp = F)
-    c <- tm_map(c, content_transformer(removeNumbers))
-    c <- tm_map(c, removeWords, stopwords("english"))
-    c <- tm_map(c, stemDocument, language = "english")
-    c <- tm_map(c, content_transformer(function(x){gsub("\\S*http+\\S*", "", x)}))
-    c <- tm_map(c, stripWhitespace)
-}
+```{r buildModel}
+input <- layer_input(shape = c(1), dtype = "string")
+
+output <- input %>% 
+  text_vectorization() %>% 
+  layer_embedding(nrow(x %>% filter(!duplicated(word))) + 1, 
+                  output_dim = 16) %>%
+  layer_global_average_pooling_1d() %>%
+  layer_dense(units = 16, activation = "relu", 
+              kernel_regularizer = regularizer_l2(l = 0.001)) %>%
+  layer_dense(units = 16, activation = "relu", 
+              kernel_regularizer = regularizer_l2(l = 0.001)) %>%
+  layer_dropout(0.5) %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+
+model <- keras_model(input, output)
 ```
 
-```{r corpusCleanUp}
-corpTrain <- cleanUp(corpTrain)
-corpTest <- cleanUp(corpTest)
-corpX <- cleanUp(corpX)
+```{r compileModel}
+model %>% compile(
+  optimizer = 'adam',
+  loss = 'binary_crossentropy',
+  metrics = list('accuracy')
+)
 ```
 
-# The next step is to create a term document matrix: 
 
-```{r}
-textTrain <- as_tibble(unlist(corpTrain))%>%
-  filter(row_number() != nrow(textTrain))%>%
-  cbind(train%>%select(target))
-
-textTest <- as_tibble(unlist(corpTest))%>%
-  filter(row_number() != nrow(textTest))
-```
-
-```{r termDocumentMatrix}
-tdmTrain <- TermDocumentMatrix(corpTrain)
-tdmTest <- TermDocumentMatrix(corpTest)
-tdmX <- TermDocumentMatrix(corpX)
-```
-
-```{r tidyTDM}
-tidyTDMTrain <- tidy(tdmTrain) %>%
-  pivot_wider(id = document, names_from = term, values_from = count, 
-              names_repair = "unique") %>%
-  rename(id = document...1)%>%
-  cbind(train$target)
+```{r trainModel}
+history <- model %>% 
+  keras::fit(
+  xTrain$text,
+  xTrain$target,
+  epochs = 10,
+  batch_size = 250,
+  validation_split = 0.2,
+  verbose=2)
 ```
 
 
