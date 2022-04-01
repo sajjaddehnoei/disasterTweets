@@ -19,8 +19,8 @@ library(wordcloud)
 library(wordcloud2)
 library(irlba)
 library(gridExtra)
-library(qdap)
 library(keras)
+library(tensorflow)
 ```
 
 ```{r readData}
@@ -163,13 +163,11 @@ input <- layer_input(shape = c(1), dtype = "string")
 output <- input %>% 
   text_vectorization() %>% 
   layer_embedding(nrow(x %>% filter(!duplicated(word))) + 1, 
-                  output_dim = 16) %>%
+                  output_dim = 512) %>%
   layer_global_average_pooling_1d() %>%
-  layer_dense(units = 16, activation = "relu", 
+  layer_dense(units = 512, activation = "relu", 
               kernel_regularizer = regularizer_l2(l = 0.001)) %>%
-  layer_dense(units = 16, activation = "relu", 
-              kernel_regularizer = regularizer_l2(l = 0.001)) %>%
-  layer_dropout(0.5) %>% 
+  layer_dropout(0.2) %>% 
   layer_dense(units = 1, activation = "sigmoid")
 
 model <- keras_model(input, output)
@@ -189,10 +187,80 @@ history <- model %>%
   keras::fit(
   xTrain$text,
   xTrain$target,
-  epochs = 10,
-  batch_size = 250,
+  epochs = 20,
+  batch_size = 512,
   validation_split = 0.2,
   verbose=2)
 ```
 
+```{r buildModel2, eval = F}
+lrModel <- glm(target ~ youTube + mentions + numStrings + numWords + keyword
+               + location, data = xTrain, family="binomial")
+
+summary(lrModel)
+```
+
+We can see from the Logistic Regression model that the following variables have a statistically significant effect on the ourtcome variable (p = 0.05):
+* keyword: "desolation", "military", "fatality", "collision",  "blight"
+* Other variables: numStrings and mentions
+
+```{r lrFit}
+xTrain <- xTrain %>%
+  mutate(sigWord = if_else(keyword %in% c("desolation", "military", "fatality", 
+                                           "collision",  "blight"), 1, 0))
+
+lrModel <- glm(target ~  mentions + numStrings + sigWord, data = xTrain, 
+               family="binomial")
+
+summary(lrModel)
+```
+
+
+
+
+
+
+# Predict the test set (Logistic Regression)
+```{r lrPredict}
+xTest <- xTest %>%
+  mutate(sigWord = if_else(keyword %in% c("desolation", "military", "fatality", 
+                                           "collision",  "blight"), 1, 0))
+
+lrPredictions <- predict(lrModel, 
+                     xTest %>% select(id, mentions, numStrings, sigWord),
+                     type = "response")
+
+lrPredictions <- as.data.frame(lrPredictions) %>%
+  rename(predictedProb = lrPredictions) %>%
+  mutate(predictedValue=if_else(predictedProb > 0.500, 1, 0))
+```
+
+
+# Neural Network
+```{r predictTestNN}
+predictions <- model %>%
+  predict(xTest$text)
+
+submission <- xTest %>%
+  select(id) %>%
+  cbind(predictions[,1])
+
+names(submission) = c("id", "probNN")
+
+submission <- submission %>%
+  cbind(lrPredictions %>% select(probLR = predictedProb)) %>%
+  rbind(tibble(id = 43, probNN = 0, probLR = 0)) %>%
+  rbind(tibble(id = 5810, probNN = 0, probLR = 0)) %>%
+  mutate(target = if_else(probLR >= .55, 1, if_else(probNN > 0.5, 1, 0)))
+```
+
+# Export submission
+```{r saveResults}
+write_csv(submission%>%select(id, target), "submissionSajjad.csv")
+```
+
+
+* Note: to find an appropriate model size, it’s best to start with relatively few layers and parameters, then begin increasing the size of the layers or adding new layers until you see diminishing returns on the validation loss. Let’s try this on our movie review classification network.
+* Here's some useful information on how to choose optimal number of hidden layers and nodes:
+https://stats.stackexchange.com/questions/181/how-to-choose-the-number-of-hidden-layers-and-nodes-in-a-feedforward-neural-netw
 
