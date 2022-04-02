@@ -49,32 +49,29 @@ x <- rbind(train%>%select(-target), test)
 
 ```{r cleaning__1}
 x <- x %>%
-  mutate(
-         # keyword = if_else(is.na(keyword), "", keyword),
-         # location = if_else(is.na(location), "", location),
-         # text = paste(str_to_lower(text), str_to_lower(keyword), 
-         #               str_to_lower(location), sep = " "),
-         text = str_to_lower(text),
-         text = gsub("http[^[:space:]]*", "", text),
-         youTube = if_else(str_detect(text, "youtube"), 1, 0),
-         mentions = if_else(str_detect(text, "@"), 1, 0),
-         text = stemDocument(text, language = "english"), 
-         text = str_trim(stripWhitespace(text)))
+  mutate(keyword = str_replace_all(keyword, "NA", "")) %>%
+  mutate(keyword = str_replace_all(keyword, "%20", " ")) %>%
+  mutate(keyword = str_to_lower(keyword)) %>%
+  mutate(text = str_to_lower(text)) %>%
+  mutate(text = gsub("http[^[:space:]]*", "", text)) %>%
+  mutate(youTube = if_else(str_detect(text, "youtube"), 1, 0)) %>%
+  mutate(mentions = if_else(str_detect(text, "@"), 1, 0)) %>%
+  mutate(text = stemDocument(text, language = "english")) %>%
+  mutate(text = str_trim(stripWhitespace(text)))
+```
+
+```{r cleaning__2}
+# if a keyword is not mentioned in the text, add it to the text.
+x <- x %>%
+  mutate(text = if_else(!is.na(keyword) & !str_detect(text, keyword), 
+                        paste(text, keyword, sep = " "), 
+                        text))
 ```
 
 ```{r countwords}
 x <- x %>%
   mutate(numStrings = str_count(text), 
          numWords = str_count(text, '\\w+'))
-```
-
-```{r removeEmojies}
-emojis <- c("\U0001F600-\U0001F64F", "\U0001F300-\U0001F5FF", "\U0001F680-\U0001F6FF", "\U0001F1E0-\U0001F1FF", "\U00002702-\U000027B0", "\U000024C2-\U0001F251")
-
-for (i in length(emojis)) {
- x <- x %>%
-  mutate(text = gsub(emojis[i], "", text, perl = T)) 
-}
 ```
 
 ```{r removePunctuations}
@@ -84,15 +81,16 @@ x <- x %>%
 ```
 
 ```{r tokenize}
-x <- x %>% unnest_tokens(word, text)
+x <- x %>% unnest_tokens(word, text, strip_punct = T)
 ```
 
 ```{r abbreviations}
 x <- x %>%
-  left_join(abbreviation, by=c("word" = "abb")) 
+  left_join(abbreviations, by=c("word" = "abb")) 
   
 x <- x %>%  
-  mutate(word = if_else(!is.na(allWords), allWords, word))
+  mutate(word = if_else(!is.na(allWords), allWords, word)) %>%
+  unnest_tokens(word, word)
 ```
 
 ```{r contractions}
@@ -100,7 +98,8 @@ x <- x %>%
   left_join(contractions, by=c("word" = "contraction")) 
   
 x <- x %>%  
-  mutate(word = if_else(!is.na(meaning), meaning, word))
+  mutate(word = if_else(!is.na(meaning), meaning, word)) %>%
+  unnest_tokens(word, word)
 ```
 
 ```{r removeStopWords}
@@ -108,7 +107,7 @@ x <- x %>%
   anti_join(stop_words, by=c("word" = "word"))
 ```
 
-```{r cleaning__2}
+```{r cleaning__3}
 x <- x %>%
   group_by(id) %>%
   mutate(sentence = paste0(word, collapse =" ")) %>%
@@ -116,12 +115,15 @@ x <- x %>%
                            word, keyword))
 ```
 
-```{r cleaning__3}
+```{r cleaning__4}
+# add sentiment as a word to the end of the sentence
 x <- x %>%
-  left_join(get_sentiments(), by= c("word" = "word"))
+  left_join(get_sentiments(), by= c("word" = "word")) %>%
+  mutate(sentence = if_else(!is.na(sentiment), 
+                            paste(sentence, sentiment, " "), sentence))
 ```
 
-```{r cleaning__4}
+```{r cleaning__5}
 df <- x %>% group_by(word) %>% summarise(n=n()) %>% arrange(desc(n))
 
 # insight from data:
@@ -174,54 +176,11 @@ xTest <- x %>%
   filter(!is.na(text))
 ```
 
-```{r desc__1}
-# df <- x %>%
-#   group_by(keyword) %>%
-#   summarise(n=n(), one = sum(target == 1), zero = sum(target == 0), 
-#             disasterRatio = one / (one + zero)) %>%
-#   arrange(desc(disasterRatio))
-df <- x %>%
-  group_by(keyword) %>%
-  summarise(n=n()) %>%
-  arrange(n)
-
-
-# wordcloud(words = df$keyword, freq = df$n, min.freq = 3, random.order = F, 
-#           colors = brewer.pal(8, "Dark2"), max.words = 10)
-# wordcloud2(df)
-```
-
-```{r desc__2}
-df <- xTrain %>%
-  group_by(location) %>%
-  summarise(n=n(), one = sum(target == 1), zero = sum(target == 0), 
-            disasterRatio = one / (one + zero)) %>%
-  arrange(desc(disasterRatio))
-```
-
-```{r desc__3}
-df <- x %>%
-  group_by(target) %>%
-  summarise(numStrings = mean(numStrings), numWords = mean(numWords))
-```
-
-```{r desc__4}
-df <- x %>%
-  group_by(sentiment) %>%
-  summarise(n=n(), one = sum(target == 1), zero = sum(target == 0), 
-            disasterRatio = one / (one + zero)) %>%
-  arrange(desc(disasterRatio))
-```
-
-# Building the model
-
-```{r classNames}
-classNames <- c(1, 0)
-```
+# Building the N Netword
 
 ```{r textVectorizer}
 num_words <- nrow(x %>% filter(!duplicated(word))) + 1
-max_length <-  50
+max_length <-  150
 # 140 is the maximum length for a tweet when the data was collected
 text_vectorization <- 
   layer_text_vectorization(max_tokens = num_words, 
@@ -243,7 +202,7 @@ output <- input %>%
   layer_global_average_pooling_1d() %>%
   layer_dense(units = 256, activation = "relu", 
               kernel_regularizer = regularizer_l2(l = 0.001)) %>%
-#  layer_dropout(0.5) %>% 
+  layer_dropout(0.5) %>% 
   layer_dense(units = 1, activation = "sigmoid")
 
 model <- keras_model(input, output)
@@ -263,37 +222,38 @@ history <- model %>%
   keras::fit(
   xTrain$text,
   xTrain$target,
-  epochs = 20,
+  epochs = 5,
   batch_size = 512,
   validation_split = 0.2,
   verbose=2)
 ```
 
+# Logistic Regression
+* To see the possible association between number of strings, number of words, mentions, and youTube links.
+
 ```{r buildModel2, eval = F}
-lrModel <- glm(target ~ youTube + mentions + numStrings + numWords + keyword
-               + location, data = xTrain, family="binomial")
+lrModel <- glm(target ~ youTube + mentions + numStrings + numWords,
+               data = xTrain, family="binomial")
 
 summary(lrModel)
 ```
 
-We can see from the Logistic Regression model that the following variables have a statistically significant effect on the ourtcome variable (p = 0.05):
-* keyword: "desolation", "military", "fatality", "collision",  "blight"
-* Other variables: numStrings and mentions
+We can see from the Logistic Regression model that the following variables have a statistically significant effect on the outcome variable (p = 0.05):
+* youTube
+* mentions
+* numStrings
+* mentions
 
 ```{r lrFit}
-xTrain <- xTrain %>%
-  mutate(sigWord = if_else(keyword %in% c("desolation", "military", "fatality", 
-                                           "collision",  "blight"), 1, 0))
-
-lrModel <- glm(target ~  mentions + numStrings + sigWord, data = xTrain, 
-               family="binomial")
+lrModel <- glm(target ~  youTube + mentions + numStrings + num_words,
+               data = xTrain, family="binomial")
 
 summary(lrModel)
 ```
 
 ```{r lrEvaluate}
-lrPredictions <- predict(lrModel, 
-                     xTrain %>% select(id, mentions, numStrings, sigWord),
+lrPredictions <- predict(lrModel, xTrain %>% 
+                           select(youTube, mentions, numStrings, numWords), 
                      type = "response")
 
 lrPredictions <- as.data.frame(lrPredictions) %>%
@@ -303,19 +263,16 @@ lrPredictions <- as.data.frame(lrPredictions) %>%
 metric_binary_accuracy(xTrain$target, lrPredictions$predictedValue)
 ```
 
-
-
-
-
+Logistic Regression has an accuracy of 0.62 just by looking at the following like:
+* whether a tweet has a youTube link
+* whether a tweet has a mention 
+* number of strings in a tweet
+* number of words in a tweet
 
 # Predict the test set (Logistic Regression)
 ```{r lrPredict}
-xTest <- xTest %>%
-  mutate(sigWord = if_else(keyword %in% c("desolation", "military", "fatality", 
-                                           "collision",  "blight"), 1, 0))
-
-lrPredictions <- predict(lrModel, 
-                     xTest %>% select(id, mentions, numStrings, sigWord),
+lrPredictions <- predict(lrModel, xTest %>% 
+                           select(youTube, mentions, numStrings, numWords), 
                      type = "response")
 
 lrPredictions <- as.data.frame(lrPredictions) %>%
@@ -324,10 +281,9 @@ lrPredictions <- as.data.frame(lrPredictions) %>%
 ```
 
 
-# Neural Network
+# Predict the test set (Neural Network)
 ```{r predictTestNN}
-predictions <- model %>%
-  predict(xTest$text)
+predictions <- model %>% predict(xTest$text)
 
 submission <- xTest %>%
   select(id) %>%
@@ -335,17 +291,23 @@ submission <- xTest %>%
 
 names(submission) = c("id", "probNN")
 
-# submission <- submission %>%
-#   cbind(lrPredictions %>% select(probLR = predictedProb)) %>%
-#   rbind(tibble(id = 43, probNN = 0, probLR = 0)) %>%
-#   rbind(tibble(id = 5810, probNN = 0, probLR = 0)) %>%
-#   mutate(target = if_else(probLR >= .55, 1, if_else(probNN > 0.5, 1, 0)))
-
 submission <- submission %>%
-#  cbind(lrPredictions %>% select(probLR = predictedProb)) %>%
-  rbind(tibble(id = 43, probNN = 0)) %>%
-#  rbind(tibble(id = 5810, probNN = 0)) %>%
-  mutate(target = if_else(probNN >= .5, 1, 0))
+  cbind(lrPredictions %>% select(probLR = predictedProb)) %>%
+  rbind(tibble(id = 43, probNN = 0, probLR = 0)) %>%
+#  rbind(tibble(id = 5810, probNN = 0, probLR = 0)) %>%
+  mutate(target = 
+           case_when(
+             probNN > 0.5 & probLR > 0.5 ~ probNN,
+             probNN < 0.5 & probLR < 0.5 ~ probNN,
+             probNN > 0.5 & probLR < 0.5 ~ (2*probNN + probLR)/2,
+             probNN < 0.5 & probLR > 0.5 ~ (2*probNN + probLR)/2)) %>%
+  mutate(target = if_else(target >= 0.5 , 1, 0))
+
+# submission <- submission %>%
+# #  cbind(lrPredictions %>% select(probLR = predictedProb)) %>%
+#   rbind(tibble(id = 43, probNN = 0)) %>%
+# #  rbind(tibble(id = 5810, probNN = 0)) %>%
+#   mutate(target = if_else(probNN >= .5, 1, 0))
 ```
 
 # Export submission

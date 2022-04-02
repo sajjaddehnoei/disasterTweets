@@ -148,10 +148,12 @@ a <- tibble("a.m" = "before midday",
 ```
 
 ```{r abbreviation}
-abbreviation <-  tibble(abb = names(abbreviations), allWords = NA)
-for (i in 1:ncol(abbreviations)) {
-  abbreviation$allWords[i] <- abbreviations[1,i, drop=T]
+abbreviations <-  tibble(abb = names(a), allWords = NA)
+for (i in 1:ncol(a)) {
+  abbreviations$allWords[i] <- a[1,i, drop=T]
 }
+
+remove(a)
 ```
 
 ```{r contractions}
@@ -162,5 +164,11 @@ contractions <- read.csv("contractions.csv", header = T) %>%
   add_row(tibble(contraction = "shes", meaning = "she is")) %>%
   add_row(tibble(contraction = "theyr", meaning = "they are")) %>%
   add_row(tibble(contraction = "theyre", meaning = "they are"))
+```
+
+```{r}
+emojiWords <- read.csv("emojis.csv", header = F) 
+
+names(emojiWords) <- c("word", "emojiMeaning")
 ```
 
