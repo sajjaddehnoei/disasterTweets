@@ -1,0 +1,461 @@
+---
+title: "Untitled"
+author: "Sajjad"
+date: "3/21/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r SetOutputDirectory}
+# This is necessary for knit_child to work properly when using "Run" in RStudio
+knitr::opts_knit$set(output.dir = ".")
+options(knitr.duplicate.label = 'allow')
+```
+
+```{r}
+output <- knitr::knit_child("dataCleaning.Rmd")
+```
+
+`r output`
+
+```{r libraries}
+library(tidyverse)
+library(stringr)
+library(lubridate)
+library(tidytext)
+library(tm)
+library(wordcloud)
+library(wordcloud2)
+library(irlba)
+library(gridExtra)
+library(keras)
+library(tensorflow)
+library(fpp2)
+library(caret)
+library(MLmetrics)
+```
+
+```{r readData}
+train <- read_csv("train.csv")
+test <- read_csv("test.csv")
+```
+
+# Mislabelled data
+Before proceeding with the analysis, I want to make sure there isn't any mislabeled data (i.e., unique texts that are interpreted differently). These can be extremely harmful to the model.
+
+```{r duplicateLabel}
+duplicateLabel <- train %>%
+  filter(duplicated(text)) %>%
+  group_by(text) %>%
+  mutate(mislabeled = if_else(!duplicated(target), 1, 0)) %>%
+  ungroup() %>%
+  filter(mislabeled == 1)
+
+train <- train %>%
+  filter(!(text %in% duplicateLabel$text))
+```
+
+
+# Cleaning data
+First, I'm Combining the two datasets to perform some cleaning. 
+* note: it's recommended to avoid any processing before splitting  data. In this case I'm saving myself some time by processing train and test sets at the same time.
+```{r rBind}
+x <- rbind(train%>%select(-target), test)
+```
+
+* Here's a list of inital text cleaning operations to clean text column:
+ + removing "NA" from keyword
+ + replacing "%20% with " " 
+ + change all characters to lower
+ + replace any link address with "url"
+ + creating flag variables for youTube, mentions
+ + stemming text
+ + and at the end, removing all blank spaces caused by previous operations.
+```{r cleaning__1}
+x <- x %>%
+  mutate(keyword = str_replace_all(keyword, "NA", "")) %>%
+  mutate(keyword = str_replace_all(keyword, "%20", " ")) %>%
+  mutate(keyword = str_to_lower(keyword)) %>%
+  mutate(text = str_to_lower(text)) %>%
+  mutate(text = gsub("http[^[:space:]]*", "url", text)) %>%
+  mutate(youTube = if_else(str_detect(text, "youtube"), 1, 0)) %>%
+  mutate(mentions = if_else(str_detect(text, "@"), 1, 0)) %>%
+  mutate(text = stemDocument(text, language = "english")) %>%
+  mutate(text = str_trim(stripWhitespace(text)))
+```
+
+# location
+It seems to me that location was free-texted by the users. This makes it absolutely difficult to interperate it. Let's first look at the distribution of target based solely on whether a tweet has a location variable or not.
+
+```{r location}
+train %>% 
+  mutate(locationEmpty = if_else(is.na(location), "noLoc", "someLoc")) %>%
+  group_by(locationEmpty) %>%
+  summarise(n=mean(target))
+```
+I can see that the there's no significant difference between the the tweets with and without location. I'm gonna ignore location moving forward. If it was a real world project, I'd probably spend some time and clean location.
+
+# keyword
+Here I've checked to make sure if keyword is in the text of the tweet or not. If it's not, I've added it to at the end to make sure we can use it in as an input to the model.
+```{r cleaning__2}
+# if a keyword is not mentioned in the text, add it to the text.
+x <- x %>%
+  mutate(text = if_else(!is.na(keyword) & !str_detect(text, keyword), 
+                        paste(text, keyword, sep = " "), 
+                        text))
+```
+
+# Explanation mark
+I'm curious to know if tweets that have ! are more likely to be related to a disaster. Let's just see:
+```{r expMark}
+train %>%
+  mutate(expMark = str_detect(text, "!")) %>%
+  group_by(expMark) %>%
+  summarise(n=mean(target))
+```
+Actually it's quite the opposite :) but we can still add as a feature. Let's do it then.
+
+```{r}
+x <- x %>%
+  mutate(expMark = if_else(str_detect(text, "!"), 1, 0))
+```
+
+# Explanation mark
+I'm also curious to know if tweets that have digits in them are more likely to be related to a disaster.
+```{r digit}
+train %>%
+  mutate(digit = str_count(text, "[:digit:]")) %>%
+  group_by(as.factor(target)) %>%
+  summarise(n=mean(digit))
+```
+this is a good signal to number of digits as a feature too.
+
+```{r}
+x <- x %>%
+  mutate(numDigits = str_count(text, "[:digit:]"))
+```
+
+# Adding two new features, number of words and strings in the tweet.
+```{r countwords}
+x <- x %>%
+  mutate(numStrings = str_count(text), 
+         numWords = str_count(text, '\\w+'))
+```
+# Remove punctuations
+```{r removePunctuations}
+x <- x %>%
+  mutate(text = removePunctuation(text), 
+         text = str_trim(stripWhitespace(text)))
+```
+
+# Tokenize the dataset
+```{r tokenize}
+x <- x %>% unnest_tokens(word, text, strip_punct = T)
+```
+
+# Abbreviations and contraactions
+I used lists of abbreviations and contractions from some friends who were very kind ans share those with us on kaggle. I put them in a seprate file (dataCleaning.Rmd) to keep this one cleaner.
+
+```{r abbreviations}
+x <- x %>%
+  left_join(abbreviations, by=c("word" = "abb")) 
+  
+x <- x %>%  
+  mutate(word = if_else(!is.na(allWords), allWords, word)) %>%
+  unnest_tokens(word, word)
+```
+
+```{r contractions}
+x <- x %>%
+  left_join(contractions, by=c("word" = "contraction")) 
+  
+x <- x %>%  
+  mutate(word = if_else(!is.na(meaning), meaning, word)) %>%
+  unnest_tokens(word, word)
+```
+
+# Remove stopwords
+```{r removeStopWords}
+x <- x %>%
+  anti_join(stop_words, by=c("word" = "word"))
+```
+
+# some more cleaning and processing
+```{r cleaning__3}
+x <- x %>%
+  group_by(id) %>%
+  mutate(sentence = paste0(word, collapse =" ")) %>%
+  mutate(keyword = if_else(word %in% unique(x$keyword) & is.na(keyword), 
+                           word, keyword))
+```
+
+# Sentiments
+I used tidytext's sentiment dataset and added them (negative or positive) at the end of each tweet.
+```{r cleaning__4} 
+# add sentiment as a word to the end of the sentence
+x <- x %>%
+  left_join(get_sentiments(), by= c("word" = "word")) %>%
+  mutate(sentence = if_else(!is.na(sentiment), 
+                            paste(sentence, sentiment, " "), sentence))
+```
+
+```{r cleaning__5}
+df <- x %>% group_by(word) %>% summarise(n=n()) %>% arrange(desc(n))
+```
+
+* Some more insights from the tokenized data:
+   +remove digits
+   +remove special characters
+   +remove < 10 and > 300
+
+```{r cleaning__6}
+x <- x %>%
+  filter(!(str_detect(word, "[:digit:]")) & str_detect(word, "[:alpha:]")) %>%
+  mutate(word = str_replace_all(word, "û", " ")) %>%
+  mutate(word = str_replace_all(word, "ª", " ")) %>%
+  mutate(word = str_replace_all(word, "ï", " ")) %>%
+  mutate(word = str_replace_all(word, "ó", " ")) %>%
+  mutate(word = str_replace_all(word, "å", " ")) %>%
+  mutate(word = str_replace_all(word, "ã", " ")) %>%
+  mutate(word = str_replace_all(word, "à", " ")) %>%
+  mutate(word = str_replace_all(word, "ê", " ")) %>%
+  mutate(word = str_replace_all(word, "â", " ")) %>%
+  mutate(word = str_replace_all(word, "ò", " ")) %>%
+  mutate(word = str_replace_all(word, "á", " ")) %>%
+  mutate(word = str_trim(stripWhitespace(word))) %>%
+     
+  filter(word != "" & word != " " & word != "  " & 
+         word != "i am" & word != "we are" & word != "they are",
+         word != "he is" & word != "she is" & word != "we are not") 
+```
+
+Now let's move back the train and test datasets.
+
+```{r trainSwitch}
+xTrain <- x %>%
+  filter(!duplicated(id)) %>%
+  select(id, youTube, mentions, numStrings, numWords, expMark, numDigits, 
+         sentence) %>%
+  right_join(train %>% select(id, keyword, location, target), by = "id") %>%
+  mutate(location = as.factor(location), keyword = as.factor(keyword)) %>%
+  mutate(youTube = as.integer(youTube), mentions = as.integer(mentions),
+         expMark = as.integer(expMark)) %>%
+  rename(text = sentence) %>%
+  filter(!is.na(text))
+```
+
+```{r testSwitch}
+xTest <- x %>%
+  filter(!duplicated(id)) %>%
+  select(id, youTube, mentions, numStrings, numWords, expMark, numDigits, 
+         sentence) %>%
+  right_join(test %>% select(id, keyword, location), by = "id") %>%
+  mutate(location = as.factor(location), keyword = as.factor(keyword)) %>%
+  mutate(youTube = as.integer(youTube), mentions = as.integer(mentions),
+         expMark = as.integer(expMark)) %>%
+  rename(text = sentence) %>%
+  filter(!is.na(text))
+```
+
+# Logistic Regression
+* To see the possible association between number of strings, number of words, mentions, and youTube links. This is more of an effect size model not a predictor.
+
+```{r buildModel2}
+lrModel <- glm(target ~ youTube + mentions + numStrings + numWords + expMark + 
+                 numDigits,
+               data = xTrain, family="binomial")
+
+summary(lrModel)
+```
+
+We can see from the Logistic Regression model that the following variables have a statistically significant effect on the outcome variable (p = 0.05):
+* youTube
+* mentions
+* numStrings
+* mentions
+
+```{r lrFit}
+lrModel <- glm(target ~  youTube + mentions + numStrings + num_words + expMark + 
+                 numDigits,
+               data = xTrain, family="binomial")
+
+summary(lrModel)
+```
+
+```{r lrEvaluate}
+lrPredictions <- predict(lrModel, xTrain %>% 
+                           select(youTube, mentions, numStrings, numWords, 
+                                  numDigits, expMark), 
+                     type = "response")
+
+lrPredictions <- as.data.frame(lrPredictions) %>%
+  rename(predictedProb = lrPredictions) %>%
+  mutate(predictedValue=if_else(predictedProb > 0.500, 1, 0))
+
+metric_binary_accuracy(xTrain$target, lrPredictions$predictedValue)
+```
+
+Logistic Regression has an accuracy of 0.625 just by looking at the following features:
+* whether a tweet has a youTube link
+* whether a tweet has a mention 
+* whether a tweet has an explanation mark
+* number of strings in a tweet
+* number of words in a tweet
+* number of digits in a tweet
+
+# Predict the test set (Logistic Regression)
+```{r lrPredict}
+lrPredictions <- predict(lrModel, xTest %>% 
+                           select(youTube, mentions, numStrings, numWords, 
+                                  numDigits, expMark), 
+                     type = "response")
+
+lrPredictions <- as.data.frame(lrPredictions) %>%
+  rename(predictedProb = lrPredictions) %>%
+  mutate(predictedValue=if_else(predictedProb > 0.500, 1, 0))
+```
+
+
+# Building the NN model
+
+```{r textVectorizer}
+num_words <- nrow(x %>% filter(!duplicated(word))) + 1
+max_length <-  150
+# 140 is the maximum length for a tweet when the data was collected
+text_vectorization <- 
+  layer_text_vectorization(max_tokens = num_words, 
+                           output_sequence_length = max_length)
+
+text_vectorization %>% adapt(xTrain$text)
+
+get_vocabulary(text_vectorization)
+text_vectorization(matrix(xTrain$text[1], ncol = 1))
+```
+
+```{r textLayer}
+inputText <- layer_input(shape = c(1), dtype = "string", name="textInput") 
+
+encodedText <- 
+  inputText %>%
+  text_vectorization() %>%
+  layer_embedding(num_words, output_dim=512) %>%
+  layer_global_average_pooling_1d() %>%
+  layer_dense(units = 512, activation = "relu", 
+              kernel_regularizer = regularizer_l2(l = 0.001)) %>%
+  layer_dropout(0.5) %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+```
+
+```{r ohterLayer}
+otherLength <- ncol(xTrain[c("youTube", "mentions", "numStrings", "numWords", 
+                                      "numDigits", "expMark")]) 
+
+inputOther <- layer_input(shape=c(otherLength), 
+                          dtype="int32", name="inputOther")
+encodedOther <- 
+  inputOther %>%
+  layer_dense(unit=1, activation="relu") 
+```
+
+```{r concatLayer}
+concatLayer <- layer_concatenate(list(inputText, inputOther))
+```
+
+```{r outputLayer}
+output <- concatLayer %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+
+```
+
+```{r buildModel}
+model <- keras_model(list(inputText, inputOther),output)
+```
+
+```{r compileModel}
+model %>% compile(
+  optimizer = 'rmsprop',
+  loss = 'binary_crossentropy',
+  metrics = list('acc')
+)
+```
+
+```{r trainModel}
+history <- model %>% 
+  keras::fit(
+  list(xTrain$text, xTrain[c("youTube", "mentions", "numStrings", "numWords", 
+                                      "numDigits", "expMark")]),
+  xTrain$target,
+  epochs = 30,
+  batch_size = 512,
+  validation_split = 0.2,
+  verbose=2)
+```
+
+
+
+# Predict the test set (Neural Network)
+```{r predictTestNN}
+predictions <- model %>% predict(xTest$text)
+
+submission <- xTest %>%
+  select(id) %>%
+  cbind(predictions[,1])
+
+names(submission) = c("id", "probNN")
+
+# submission <- submission %>%
+#  cbind(lrPredictions %>% select(probLR = predictedProb)) %>%
+#  rbind(tibble(id = 43, probNN = 0, probLR = 0)) %>%
+# #rbind(tibble(id = 5810, probNN = 0, probLR = 0)) %>%
+# mutate(target =
+#          case_when(
+#            probNN > 0.5 & probLR > 0.5 ~ probNN,
+#            probNN < 0.5 & probLR < 0.5 ~ probNN,
+#            probNN > 0.5 & probLR < 0.5 ~ (probNN + probLR)/2,
+#            probNN < 0.5 & probLR > 0.5 ~ (probNN + probLR)/2)) %>%
+# 
+# mutate(target = if_else(target >= 0.5 , 1, 0))
+
+submission <- submission %>%
+  rbind(tibble(id = 43, probNN = 0)) %>%
+  mutate(target = if_else(probNN >= .50, 1, 0))
+```
+
+
+# Export submission
+```{r saveResults}
+write_csv(submission%>%select(id, target), "submissionSajjad.csv")
+```
+
+```{r evaluateResults}
+#testLabels <- read_csv("leakedLabels.csv", col_names = T)
+
+results <- submission %>%
+  left_join(testLabels, by = "id") %>%
+  rename(predictedNN = target.x, actual = target.y) %>%
+  left_join(xTest %>% select(text), by = "id") %>%
+  left_join(lrPredictions %>% cbind(xTest %>% select(id)), by= "id") %>%
+  rename(probLR = predictedProb ) %>%
+  relocate(probLR, .after = probNN) %>%
+  mutate(predictedLR = if_else(probLR > 0.5, 1, 0)) %>%
+  select(-predictedValue)
+```
+
+```{r metrics}
+# confusionMatrix(as.factor(submission$target), as.factor(testLabels$target),
+#                 positive = "1")
+# F1_Score(as.factor(testLabels$target), as.factor(submission$target),
+#                 positive = "1")
+metric_binary_accuracy(submission$target, testLabels$target)
+
+```
+
+
+
+* Note: to find an appropriate model size, it’s best to start with relatively few layers and parameters, then begin increasing the size of the layers or adding new layers until you see diminishing returns on the validation loss. Let’s try this on our movie review classification network.
+* Here's some useful information on how to choose optimal number of hidden layers and nodes:
+https://stats.stackexchange.com/questions/181/how-to-choose-the-number-of-hidden-layers-and-nodes-in-a-feedforward-neural-netw
+
