@@ -336,57 +336,61 @@ text_vectorization(matrix(xTrain$text[1], ncol = 1))
 ```
 
 ```{r textLayer}
-inputText <- layer_input(shape = c(1), dtype = "string", name="textInput") 
+inputText <- layer_input(shape=c(1), dtype="string")
 
-encodedText <- 
+outputText <-
   inputText %>%
   text_vectorization() %>%
-  layer_embedding(num_words, output_dim=512) %>%
+  layer_embedding(num_words, output_dim=256) %>%
   layer_global_average_pooling_1d() %>%
-  layer_dense(units = 512, activation = "relu", 
+  layer_dense(units = 256, activation = "relu",
               kernel_regularizer = regularizer_l2(l = 0.001)) %>%
-  layer_dropout(0.5) %>% 
-  layer_dense(units = 1, activation = "sigmoid")
+  layer_dropout(0.5)
+
+textModel <- keras_model(inputText, outputText)
 ```
 
 ```{r ohterLayer}
-otherLength <- ncol(xTrain[c("youTube", "mentions", "numStrings", "numWords", 
-                                      "numDigits", "expMark")]) 
+otherLength <- ncol(xTrain[c("youTube", "mentions", "numStrings", "numWords",
+                                      "numDigits", "expMark")])
 
-inputOther <- layer_input(shape=c(otherLength), 
+inputOther <- layer_input(shape=c(otherLength),
                           dtype="int32", name="inputOther")
-encodedOther <- 
+outputOther <-
   inputOther %>%
-  layer_dense(unit=1, activation="relu") 
+  layer_dense(unit=256, activation="relu")
+
+otherModel <- keras_model(inputOther, outputOther)
 ```
 
-```{r concatLayer}
-concatLayer <- layer_concatenate(list(inputText, inputOther))
+```{r concat}
+concat <- k_concatenate(c(outputText, outputOther))
 ```
 
-```{r outputLayer}
-output <- concatLayer %>% 
+```{r lastLayer}
+finalOutput <- concat %>%
+  layer_dense(unit=2, activation="relu") %>%
   layer_dense(units = 1, activation = "sigmoid")
-
 ```
 
 ```{r buildModel}
-model <- keras_model(list(inputText, inputOther),output)
+model <- keras_model(inputs = list(inputText, inputOther), outputs = finalOutput)
 ```
 
 ```{r compileModel}
 model %>% compile(
-  optimizer = 'rmsprop',
-  loss = 'binary_crossentropy',
-  metrics = list('acc')
+  optimizer = 'adam',
+  loss = 'binary-crossentropy',
+  metrics = list('accuracy')
 )
 ```
 
 ```{r trainModel}
+aux <-  as.matrix(xTrain[c("youTube", "mentions", "numStrings", "numWords",
+                             "numDigits", "expMark")])
 history <- model %>% 
   keras::fit(
-  list(xTrain$text, xTrain[c("youTube", "mentions", "numStrings", "numWords", 
-                                      "numDigits", "expMark")]),
+  list(xTrain$text, aux[1:7432, ]),
   xTrain$target,
   epochs = 30,
   batch_size = 512,
