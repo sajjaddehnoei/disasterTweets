@@ -1,0 +1,131 @@
+```{r removeEmojies}
+x <- x %>%
+  left_join(emojiWords, by = "word")
+```
+
+
+```{r desc__1}
+# df <- x %>%
+#   group_by(keyword) %>%
+#   summarise(n=n(), one = sum(target == 1), zero = sum(target == 0), 
+#             disasterRatio = one / (one + zero)) %>%
+#   arrange(desc(disasterRatio))
+df <- x %>%
+  group_by(keyword) %>%
+  summarise(n=n()) %>%
+  arrange(n)
+
+
+# wordcloud(words = df$keyword, freq = df$n, min.freq = 3, random.order = F, 
+#           colors = brewer.pal(8, "Dark2"), max.words = 10)
+# wordcloud2(df)
+```
+
+```{r desc__2}
+df <- xTrain %>%
+  group_by(location) %>%
+  summarise(n=n(), one = sum(target == 1), zero = sum(target == 0), 
+            disasterRatio = one / (one + zero)) %>%
+  arrange(desc(disasterRatio))
+```
+
+```{r desc__3}
+df <- x %>%
+  group_by(target) %>%
+  summarise(numStrings = mean(numStrings), numWords = mean(numWords))
+```
+
+```{r desc__4}
+df <- x %>%
+  group_by(sentiment) %>%
+  summarise(n=n(), one = sum(target == 1), zero = sum(target == 0), 
+            disasterRatio = one / (one + zero)) %>%
+  arrange(desc(disasterRatio))
+```
+
+```{r oldModel}
+output <- 
+  input %>% 
+  text_vectorization() %>% 
+  layer_embedding(nrow(x %>% filter(!duplicated(word))) + 1, 
+                  output_dim = 512) %>%
+  layer_global_average_pooling_1d() %>%
+  layer_dense(units = 512, activation = "relu", 
+              kernel_regularizer = regularizer_l2(l = 0.001)) %>%
+#  layer_dropout(0.5) %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+
+model <- keras_model(input, output)
+```
+
+```{r multipleInpitModel}
+# https://www.kaggle.com/code/hiroshiotagaki/keras-mulitiple-inputs-with-glove-r#Keras-multiple-inputs-model
+model <- NULL
+text_input <- layer_input(shape=list(NULL), dtype="int32", name="text")
+encoded_text <- text_input %>% 
+  layer_embedding(input_dim=vocab_size, output_dim=embedding_dim) %>%
+  layer_lstm(units=24)
+
+kw_input <- layer_input(shape=c(ncol(kwdata)), dtype="int32", name="keyword")
+encoded_keyword <- kw_input %>%
+  layer_dense(unit=16, activation="relu")
+layer_lstm(units=8)
+
+concatenated <- layer_concatenate(list(encoded_text, encoded_keyword))
+output <- concatenated %>% layer_dense(unit=1, activation="sigmoid" )
+
+
+model <- keras_model(list(text_input, kw_input),output)
+```
+
+
+```{r lrEvaluate, eval=F}
+lrPredictions <- predict(lrModel, xTrain %>% 
+                           select(youTube, mentions, numStrings, numWords, 
+                                  numDigits, expMark), 
+                     type = "response")
+
+lrPredictions <- as.data.frame(lrPredictions) %>%
+  rename(predictedProb = lrPredictions) %>%
+  mutate(predictedValue=if_else(predictedProb > 0.500, 1, 0))
+
+metric_binary_accuracy(xTrain$target, lrPredictions$predictedValue)
+```
+
+Logistic Regression has an accuracy of 0.625 just by looking at the following features:
+* whether a tweet has a youTube link
+* whether a tweet has a mention 
+* whether a tweet has an explanation mark
+* number of strings in a tweet
+* number of words in a tweet
+* number of digits in a tweet
+# Predict the test set (Logistic Regression)
+```{r lrPredict, eval=F}
+lrPredictions <- predict(lrModel, xTest %>% 
+                           select(youTube, mentions, numStrings, numWords, 
+                                  numDigits, expMark), 
+                     type = "response")
+
+lrPredictions <- as.data.frame(lrPredictions) %>%
+  rename(predictedProb = lrPredictions) %>%
+  mutate(predictedValue=if_else(predictedProb > 0.500, 1, 0))
+```
+
+```{r metrics}
+#testLabels <- read_csv("leakedLabels.csv", col_names = T)
+metric_binary_accuracy(submission$target, testLabels$target)
+```
+
+```{r evaluateResults}
+#testLabels <- read_csv("leakedLabels.csv", col_names = T)
+
+results <- submission %>%
+  left_join(testLabels, by = "id") %>%
+  rename(predictedNN = target.x, actual = target.y) %>%
+  left_join(xTest %>% select(text), by = "id") %>%
+  left_join(lrPredictions %>% cbind(xTest %>% select(id)), by= "id") %>%
+  rename(probLR = predictedProb ) %>%
+  relocate(probLR, .after = probNN) %>%
+  mutate(predictedLR = if_else(probLR > 0.5, 1, 0)) %>%
+  select(-predictedValue)
+```

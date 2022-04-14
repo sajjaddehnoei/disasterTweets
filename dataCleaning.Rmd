@@ -9,6 +9,11 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+```{r}
+library(tidyverse)
+```
+
+
 ```{r abbreviationList}
 # retrieved from: 
 # https://www.kaggle.com/code/weiyue01/data-cleaning-autogluon/notebook?scriptVersionId=88446370

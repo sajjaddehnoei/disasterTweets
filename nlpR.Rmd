@@ -1,5 +1,5 @@
 ---
-title: "Untitled"
+title: "nlpR"
 author: "Sajjad"
 date: "3/21/2022"
 output: html_document
@@ -15,13 +15,12 @@ knitr::opts_knit$set(output.dir = ".")
 options(knitr.duplicate.label = 'allow')
 ```
 
-```{r}
+```{r, include=F}
 output <- knitr::knit_child("dataCleaning.Rmd")
 ```
 
-`r output`
 
-```{r libraries}
+```{r libraries, include=F}
 library(tidyverse)
 library(stringr)
 library(lubridate)
@@ -38,7 +37,7 @@ library(caret)
 library(MLmetrics)
 ```
 
-```{r readData}
+```{r readData, include=F}
 train <- read_csv("train.csv")
 test <- read_csv("test.csv")
 ```
@@ -123,7 +122,7 @@ x <- x %>%
   mutate(expMark = if_else(str_detect(text, "!"), 1, 0))
 ```
 
-# Explanation mark
+# Digits
 I'm also curious to know if tweets that have digits in them are more likely to be related to a disaster.
 ```{r digit}
 train %>%
@@ -260,6 +259,7 @@ xTest <- x %>%
   filter(!is.na(text))
 ```
 
+
 # Logistic Regression
 * To see the possible association between number of strings, number of words, mentions, and youTube links. This is more of an effect size model not a predictor.
 
@@ -277,51 +277,8 @@ We can see from the Logistic Regression model that the following variables have 
 * numStrings
 * mentions
 
-```{r lrFit}
-lrModel <- glm(target ~  youTube + mentions + numStrings + num_words + expMark + 
-                 numDigits,
-               data = xTrain, family="binomial")
-
-summary(lrModel)
-```
-
-```{r lrEvaluate}
-lrPredictions <- predict(lrModel, xTrain %>% 
-                           select(youTube, mentions, numStrings, numWords, 
-                                  numDigits, expMark), 
-                     type = "response")
-
-lrPredictions <- as.data.frame(lrPredictions) %>%
-  rename(predictedProb = lrPredictions) %>%
-  mutate(predictedValue=if_else(predictedProb > 0.500, 1, 0))
-
-metric_binary_accuracy(xTrain$target, lrPredictions$predictedValue)
-```
-
-Logistic Regression has an accuracy of 0.625 just by looking at the following features:
-* whether a tweet has a youTube link
-* whether a tweet has a mention 
-* whether a tweet has an explanation mark
-* number of strings in a tweet
-* number of words in a tweet
-* number of digits in a tweet
-
-# Predict the test set (Logistic Regression)
-```{r lrPredict}
-lrPredictions <- predict(lrModel, xTest %>% 
-                           select(youTube, mentions, numStrings, numWords, 
-                                  numDigits, expMark), 
-                     type = "response")
-
-lrPredictions <- as.data.frame(lrPredictions) %>%
-  rename(predictedProb = lrPredictions) %>%
-  mutate(predictedValue=if_else(predictedProb > 0.500, 1, 0))
-```
-
-
-# Building the NN model
-
-```{r textVectorizer}
+# Building the model
+```{r textVectorizer, include=F}
 num_words <- nrow(x %>% filter(!duplicated(word))) + 1
 max_length <-  150
 # 140 is the maximum length for a tweet when the data was collected
@@ -332,20 +289,24 @@ text_vectorization <-
 text_vectorization %>% adapt(xTrain$text)
 
 get_vocabulary(text_vectorization)
-text_vectorization(matrix(xTrain$text[1], ncol = 1))
+```
+
+Let's just quickly look at one document
+```{r test}
+text_vectorization(matrix(xTrain$text[1995], ncol = 1))
 ```
 
 ```{r textLayer}
 inputText <- layer_input(shape=c(1), dtype="string")
 
-outputText <-
-  inputText %>%
+outputText <- inputText %>%
   text_vectorization() %>%
-  layer_embedding(num_words, output_dim=256) %>%
-  layer_global_average_pooling_1d() %>%
-  layer_dense(units = 256, activation = "relu",
+  layer_embedding(num_words, max_length) %>%
+  layer_lstm(units=max_length) %>%
+#  layer_global_average_pooling_3d() %>%
+  layer_dense(units = 301, activation = "relu",
               kernel_regularizer = regularizer_l2(l = 0.001)) %>%
-  layer_dropout(0.5)
+  layer_dropout(0.75) 
 
 textModel <- keras_model(inputText, outputText)
 ```
@@ -358,7 +319,10 @@ inputOther <- layer_input(shape=c(otherLength),
                           dtype="int32", name="inputOther")
 outputOther <-
   inputOther %>%
-  layer_dense(unit=256, activation="relu")
+  layer_normalization() %>%
+  layer_dense(unit=10, activation="relu",
+              kernel_regularizer = regularizer_l1(l = 0.001))%>%
+  layer_dropout(0.25)
 
 otherModel <- keras_model(inputOther, outputOther)
 ```
@@ -369,7 +333,6 @@ concat <- k_concatenate(c(outputText, outputOther))
 
 ```{r lastLayer}
 finalOutput <- concat %>%
-  layer_dense(unit=2, activation="relu") %>%
   layer_dense(units = 1, activation = "sigmoid")
 ```
 
@@ -380,7 +343,7 @@ model <- keras_model(inputs = list(inputText, inputOther), outputs = finalOutput
 ```{r compileModel}
 model %>% compile(
   optimizer = 'adam',
-  loss = 'binary-crossentropy',
+  loss = 'binary_crossentropy',
   metrics = list('accuracy')
 )
 ```
@@ -388,21 +351,28 @@ model %>% compile(
 ```{r trainModel}
 aux <-  as.matrix(xTrain[c("youTube", "mentions", "numStrings", "numWords",
                              "numDigits", "expMark")])
-history <- model %>% 
+history <- model %>%
   keras::fit(
   list(xTrain$text, aux[1:7432, ]),
   xTrain$target,
   epochs = 30,
-  batch_size = 512,
+  batch_size = 500,
   validation_split = 0.2,
   verbose=2)
 ```
 
 
+```{r plotModel}
+summary(model)
+plot(history)
+```
 
-# Predict the test set (Neural Network)
+
+# Predict the test set
 ```{r predictTestNN}
-predictions <- model %>% predict(xTest$text)
+aux <-  as.matrix(xTest[c("youTube", "mentions", "numStrings", "numWords",
+                             "numDigits", "expMark")])
+predictions <- model %>% predict(list(xTest$text,aux[1:nrow(xTest), ]))
 
 submission <- xTest %>%
   select(id) %>%
@@ -410,51 +380,14 @@ submission <- xTest %>%
 
 names(submission) = c("id", "probNN")
 
-# submission <- submission %>%
-#  cbind(lrPredictions %>% select(probLR = predictedProb)) %>%
-#  rbind(tibble(id = 43, probNN = 0, probLR = 0)) %>%
-# #rbind(tibble(id = 5810, probNN = 0, probLR = 0)) %>%
-# mutate(target =
-#          case_when(
-#            probNN > 0.5 & probLR > 0.5 ~ probNN,
-#            probNN < 0.5 & probLR < 0.5 ~ probNN,
-#            probNN > 0.5 & probLR < 0.5 ~ (probNN + probLR)/2,
-#            probNN < 0.5 & probLR > 0.5 ~ (probNN + probLR)/2)) %>%
-# 
-# mutate(target = if_else(target >= 0.5 , 1, 0))
-
 submission <- submission %>%
   rbind(tibble(id = 43, probNN = 0)) %>%
   mutate(target = if_else(probNN >= .50, 1, 0))
 ```
 
-
 # Export submission
 ```{r saveResults}
 write_csv(submission%>%select(id, target), "submissionSajjad.csv")
-```
-
-```{r evaluateResults}
-#testLabels <- read_csv("leakedLabels.csv", col_names = T)
-
-results <- submission %>%
-  left_join(testLabels, by = "id") %>%
-  rename(predictedNN = target.x, actual = target.y) %>%
-  left_join(xTest %>% select(text), by = "id") %>%
-  left_join(lrPredictions %>% cbind(xTest %>% select(id)), by= "id") %>%
-  rename(probLR = predictedProb ) %>%
-  relocate(probLR, .after = probNN) %>%
-  mutate(predictedLR = if_else(probLR > 0.5, 1, 0)) %>%
-  select(-predictedValue)
-```
-
-```{r metrics}
-# confusionMatrix(as.factor(submission$target), as.factor(testLabels$target),
-#                 positive = "1")
-# F1_Score(as.factor(testLabels$target), as.factor(submission$target),
-#                 positive = "1")
-metric_binary_accuracy(submission$target, testLabels$target)
-
 ```
 
 
@@ -462,4 +395,9 @@ metric_binary_accuracy(submission$target, testLabels$target)
 * Note: to find an appropriate model size, it’s best to start with relatively few layers and parameters, then begin increasing the size of the layers or adding new layers until you see diminishing returns on the validation loss. Let’s try this on our movie review classification network.
 * Here's some useful information on how to choose optimal number of hidden layers and nodes:
 https://stats.stackexchange.com/questions/181/how-to-choose-the-number-of-hidden-layers-and-nodes-in-a-feedforward-neural-netw
+* Here's a super helpful snippet for troubleshooting keras errors that come from python:
+```{r, eval=F}
+reticulate::py_last_error()
+cat(reticulate::py_last_error()$message)
+```
 
