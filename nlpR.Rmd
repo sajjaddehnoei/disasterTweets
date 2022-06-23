@@ -19,7 +19,6 @@ options(knitr.duplicate.label = 'allow')
 output <- knitr::knit_child("dataCleaning.Rmd")
 ```
 
-
 ```{r libraries, include=F}
 library(tidyverse)
 library(stringr)
@@ -35,6 +34,7 @@ library(tensorflow)
 library(fpp2)
 library(caret)
 library(MLmetrics)
+library(ggpubr)
 ```
 
 ```{r readData, include=F}
@@ -43,7 +43,9 @@ test <- read_csv("test.csv")
 ```
 
 # Mislabelled data
-Before proceeding with the analysis, I want to make sure there isn't any mislabeled data (i.e., unique texts that are interpreted differently). These can be extremely harmful to the model.
+Before proceeding with the analysis, I want to make sure there isn't any 
+mislabeled data (i.e., unique texts that are interpreted differently). 
+These can be harmful to the model.
 
 ```{r duplicateLabel}
 duplicateLabel <- train %>%
@@ -52,25 +54,53 @@ duplicateLabel <- train %>%
   mutate(mislabeled = if_else(!duplicated(target), 1, 0)) %>%
   ungroup() %>%
   filter(mislabeled == 1)
+```
 
+```{r}
+a <- train %>%
+  mutate(target = factor(target, levels = c(0, 1))) %>%
+  ggplot(aes(x = target, fill = target)) +
+  geom_bar()+
+  scale_fill_brewer(palette = "Set1")+
+  labs(x = "Target (0 or 1)", y = "", title = "Target distribution in the entire train set")+
+  coord_flip()
+
+b <- duplicateLabel %>%
+  mutate(target = factor(target, levels = c(0, 1))) %>%
+  ggplot(aes(x = target, fill = target)) +
+  geom_bar()+
+  scale_fill_brewer(palette = "Set1") +
+  labs(x = "Target (0 or 1)", y = "", title = "Target distribution in misslabelled tweets")+
+  coord_flip()
+
+ggarrange(a, b,
+          ncol = 1, nrow = 2, hjust = -.5, vjust = 2.5)
+```
+
+Looking at the plots, we realize there's a considerable difference between the 
+two groups. I would continue by removing these tweets from the training set as 
+we really don't have a way to find the correct labels.
+
+```{r}
 train <- train %>%
   filter(!(text %in% duplicateLabel$text))
 ```
 
-
 # Cleaning data
 First, I'm Combining the two datasets to perform some cleaning. 
-* note: it's recommended to avoid any processing before splitting  data. In this case I'm saving myself some time by processing train and test sets at the same time.
+* note: it's recommended to avoid any processing before splitting  data. 
+In this case I'm saving myself some time by processing train and test sets at 
+the same time.
 ```{r rBind}
 x <- rbind(train%>%select(-target), test)
 ```
 
-* Here's a list of inital text cleaning operations to clean text column:
+* Here's a list of initial text cleaning operations to clean text column:
  + removing "NA" from keyword
  + replacing "%20% with " " 
  + change all characters to lower
- + replace any link address with "url"
- + creating flag variables for youTube, mentions
+ + replace any link address with "URL"
+ + creating flag variables for youtube, mentions
  + stemming text
  + and at the end, removing all blank spaces caused by previous operations.
 ```{r cleaning__1}
@@ -87,18 +117,33 @@ x <- x %>%
 ```
 
 # location
-It seems to me that location was free-texted by the users. This makes it absolutely difficult to interperate it. Let's first look at the distribution of target based solely on whether a tweet has a location variable or not.
+It seems to me that location was free-texted by the users. This makes it 
+difficult to interpret. Let's first look at the distribution of target by 
+whether a tweet has a location variable or not.
 
 ```{r location}
 train %>% 
-  mutate(locationEmpty = if_else(is.na(location), "noLoc", "someLoc")) %>%
+  mutate(locationEmpty = if_else(is.na(location), "No Location", "Some Location")) %>%
+  mutate(target = as.numeric(target)) %>%
   group_by(locationEmpty) %>%
-  summarise(n=mean(target))
+  summarise(n=mean(target)) %>%
+  ggplot(aes(x=locationEmpty, y = n, fill = locationEmpty))+
+  geom_bar(stat = "identity")+
+  scale_fill_brewer(palette = "Set2")+
+  geom_text(aes(x = locationEmpty, y = n, label = round(n, 3)))+
+  labs(x = "n", y = "Location")+
+  coord_flip()+
+  theme_classic()
 ```
-I can see that the there's no significant difference between the the tweets with and without location. I'm gonna ignore location moving forward. If it was a real world project, I'd probably spend some time and clean location.
+
+I can see that the there's no significant difference between the the tweets 
+with and without location. I'm gonna ignore location moving forward. If it was 
+a real world project, I'd probably spend some time and clean location.
 
 # keyword
-Here I've checked to make sure if keyword is in the text of the tweet or not. If it's not, I've added it to at the end to make sure we can use it in as an input to the model.
+Here I've checked to make sure if keyword is in the text of the tweet or not. 
+If it's not, I've added it to at the end to make sure we can use it in as an 
+input to the model.
 ```{r cleaning__2}
 # if a keyword is not mentioned in the text, add it to the text.
 x <- x %>%
@@ -107,15 +152,55 @@ x <- x %>%
                         text))
 ```
 
-# Explanation mark
-I'm curious to know if tweets that have ! are more likely to be related to a disaster. Let's just see:
-```{r expMark}
+Let's also take a quick look at top 50 frequently used words in the dataset.
+```{r}
 train %>%
-  mutate(expMark = str_detect(text, "!")) %>%
-  group_by(expMark) %>%
-  summarise(n=mean(target))
+  unnest_tokens(word, text, strip_punct = T) %>%
+  filter(!is.na(keyword)) %>%
+  mutate(keyword = as.factor(keyword)) %>%
+  group_by(keyword) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n)) %>%
+  filter(row_number() <= 50) %>%
+  ggplot(aes(x = reorder(keyword, n), y = n))+
+    geom_bar(stat = "identity", fill = "#175ed1")+
+  coord_flip()+
+  theme_classic()
 ```
-Actually it's quite the opposite :) but we can still add as a feature. Let's do it then.
+
+There are `r nrow(train %>% filter(str_detect(keyword, "url")))` tweets with 
+`r NA` keyword. We will get back to this shortly.
+
+
+# Explanation mark
+I'm curious to know if tweets that have ! are more likely to be related to 
+a disaster. Let's just see:
+```{r expMark}
+aux <- train %>%
+  mutate(expMark = if_else(str_detect(text, "!"), "Yes", "No")) %>%
+  group_by(expMark) %>%
+  summarise(groupN = n())
+
+train %>%
+  mutate(expMark = if_else(str_detect(text, "!"), "Yes", "No")) %>%
+  mutate(target = as.factor(target)) %>%
+  mutate(expMark = as.factor(expMark)) %>%
+  group_by(expMark, target) %>%
+  summarise(n = n()) %>%
+  left_join(aux, by = c("expMark" = "expMark"))%>%
+  ggplot(aes(x = expMark, y=n, fill = target))+
+  geom_bar(position="fill", stat="identity")+
+  scale_fill_brewer(palette = "Set3")+
+  geom_text(aes(x = expMark, y= c(1, 0.48, 0.97, 0.3), 
+                label = paste0(round(n/groupN * 100, 2), "%")))+
+  theme_classic()+
+  labs(x = "Does the tweet have explanation mark?", y="")+
+  coord_flip()
+```
+
+
+Actually it's quite the opposite :) but we can still add explanation mark as 
+a feature:
 
 ```{r}
 x <- x %>%
@@ -123,14 +208,16 @@ x <- x %>%
 ```
 
 # Digits
-I'm also curious to know if tweets that have digits in them are more likely to be related to a disaster.
+I'm also curious to know if tweets that have digits in them are more likely to 
+be related to a disaster. In particular _911_ and other emergency services in 
+other countries can be a reason for this.
 ```{r digit}
 train %>%
   mutate(digit = str_count(text, "[:digit:]")) %>%
   group_by(as.factor(target)) %>%
   summarise(n=mean(digit))
 ```
-this is a good signal to number of digits as a feature too.
+this is a good signal to include number of digits as a feature too.
 
 ```{r}
 x <- x %>%
@@ -138,11 +225,15 @@ x <- x %>%
 ```
 
 # Adding two new features, number of words and strings in the tweet.
+I suspect length of a tweet and number of strings used in a it can have some 
+correlation with disasters, maybe people tend to use fewer words and/or 
+longer/shorter words when tweeting about a disaster.
 ```{r countwords}
 x <- x %>%
   mutate(numStrings = str_count(text), 
          numWords = str_count(text, '\\w+'))
 ```
+
 # Remove punctuations
 ```{r removePunctuations}
 x <- x %>%
@@ -156,7 +247,9 @@ x <- x %>% unnest_tokens(word, text, strip_punct = T)
 ```
 
 # Abbreviations and contraactions
-I used lists of abbreviations and contractions from some friends who were very kind ans share those with us on kaggle. I put them in a seprate file (dataCleaning.Rmd) to keep this one cleaner.
+I used lists of abbreviations and contractions from some friends who were 
+very kind and shared those with us on Kaggle. I put them in a separate file 
+(dataCleaning.Rmd) to keep this one cleaner.
 
 ```{r abbreviations}
 x <- x %>%
@@ -177,6 +270,8 @@ x <- x %>%
 ```
 
 # Remove stopwords
+I used tidytext _stop_words_ dataset to remove all stop words from our training
+set.
 ```{r removeStopWords}
 x <- x %>%
   anti_join(stop_words, by=c("word" = "word"))
@@ -192,7 +287,8 @@ x <- x %>%
 ```
 
 # Sentiments
-I used tidytext's sentiment dataset and added them (negative or positive) at the end of each tweet.
+I used tidytext's sentiment dataset and added them (negative or positive) at 
+the end of each tweet.
 ```{r cleaning__4} 
 # add sentiment as a word to the end of the sentence
 x <- x %>%
@@ -201,14 +297,25 @@ x <- x %>%
                             paste(sentence, sentiment, " "), sentence))
 ```
 
-```{r cleaning__5}
-df <- x %>% group_by(word) %>% summarise(n=n()) %>% arrange(desc(n))
+# Words Frequency
+Let's also take a quick look at top 50 frequently used keywords in the dataset.
+```{r}
+train %>% 
+  unnest_tokens(word, text, strip_punct = T) %>%
+  group_by(word) %>% 
+  summarise(n=n()) %>% 
+  arrange(desc(n)) %>%
+  filter(row_number() <= 50) %>%
+  ggplot(aes(x = reorder(word, n), y = n))+
+    geom_bar(stat = "identity", fill = "#ab1b16")+
+  coord_flip()
 ```
 
 * Some more insights from the tokenized data:
    +remove digits
    +remove special characters
    +remove < 10 and > 300
+   +remove t.co and http
 
 ```{r cleaning__6}
 x <- x %>%
@@ -224,12 +331,15 @@ x <- x %>%
   mutate(word = str_replace_all(word, "â", " ")) %>%
   mutate(word = str_replace_all(word, "ò", " ")) %>%
   mutate(word = str_replace_all(word, "á", " ")) %>%
+  mutate(word = str_replace_all(word, "http", " ")) %>%
+  mutate(word = str_replace_all(word, "t.co", " ")) %>%
   mutate(word = str_trim(stripWhitespace(word))) %>%
      
   filter(word != "" & word != " " & word != "  " & 
          word != "i am" & word != "we are" & word != "they are",
          word != "he is" & word != "she is" & word != "we are not") 
 ```
+
 
 Now let's move back the train and test datasets.
 
@@ -261,7 +371,9 @@ xTest <- x %>%
 
 
 # Logistic Regression
-* To see the possible association between number of strings, number of words, mentions, and youTube links. This is more of an effect size model not a predictor.
+* To see the possible association between number of strings, number of words, 
+mentions, and youTube links. This is more of an effect size model not 
+a predictor.
 
 ```{r buildModel2}
 lrModel <- glm(target ~ youTube + mentions + numStrings + numWords + expMark + 
@@ -271,16 +383,17 @@ lrModel <- glm(target ~ youTube + mentions + numStrings + numWords + expMark +
 summary(lrModel)
 ```
 
-We can see from the Logistic Regression model that the following variables have a statistically significant effect on the outcome variable (p = 0.05):
+We can see from the Logistic Regression model that the following variables have 
+a statistically significant effect on the outcome variable (p = 0.05):
 * youTube
 * mentions
 * numStrings
 * mentions
 
 # Building the model
-```{r textVectorizer, include=F}
+```{r textVectorizer, include= F}
 num_words <- nrow(x %>% filter(!duplicated(word))) + 1
-max_length <-  150
+max_length <-  140
 # 140 is the maximum length for a tweet when the data was collected
 text_vectorization <- 
   layer_text_vectorization(max_tokens = num_words, 
@@ -303,7 +416,7 @@ outputText <- inputText %>%
   text_vectorization() %>%
   layer_embedding(num_words, max_length) %>%
   layer_lstm(units=max_length) %>%
-#  layer_global_average_pooling_3d() %>%
+#  layer_global_average_pooling_1d() %>%
   layer_dense(units = 301, activation = "relu",
               kernel_regularizer = regularizer_l2(l = 0.001)) %>%
   layer_dropout(0.75) 
@@ -337,7 +450,8 @@ finalOutput <- concat %>%
 ```
 
 ```{r buildModel}
-model <- keras_model(inputs = list(inputText, inputOther), outputs = finalOutput)
+model <- keras_model(inputs = list(inputText, inputOther),
+                     outputs = finalOutput)
 ```
 
 ```{r compileModel}
@@ -355,21 +469,19 @@ history <- model %>%
   keras::fit(
   list(xTrain$text, aux[1:7432, ]),
   xTrain$target,
-  epochs = 30,
-  batch_size = 500,
+  epochs = 20,
+  batch_size = 250,
   validation_split = 0.2,
   verbose=2)
 ```
-
 
 ```{r plotModel}
 summary(model)
 plot(history)
 ```
 
-
 # Predict the test set
-```{r predictTestNN}
+```{r predictTestNN, eval=F}
 aux <-  as.matrix(xTest[c("youTube", "mentions", "numStrings", "numWords",
                              "numDigits", "expMark")])
 predictions <- model %>% predict(list(xTest$text,aux[1:nrow(xTest), ]))
@@ -386,11 +498,13 @@ submission <- submission %>%
 ```
 
 # Export submission
-```{r saveResults}
+```{r saveResults, eval=F}
 write_csv(submission%>%select(id, target), "submissionSajjad.csv")
 ```
 
+<!-- 
 
+*** Note to self ***
 
 * Note: to find an appropriate model size, it’s best to start with relatively few layers and parameters, then begin increasing the size of the layers or adding new layers until you see diminishing returns on the validation loss. Let’s try this on our movie review classification network.
 * Here's some useful information on how to choose optimal number of hidden layers and nodes:
@@ -401,3 +515,4 @@ reticulate::py_last_error()
 cat(reticulate::py_last_error()$message)
 ```
 
+-->
