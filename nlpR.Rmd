@@ -280,7 +280,7 @@ x <- x %>%
   mutate(expMark = if_else(str_detect(text, "!"), 1, 0))
 ```
 
-# Digits
+## Digits
 
 I'm also curious to know if tweets that have digits in them are more
 likely to be related to a disaster. In particular *911* and other
@@ -300,7 +300,7 @@ x <- x %>%
   mutate(numDigits = str_count(text, "[:digit:]"))
 ```
 
-# Adding two new features, number of words and strings in the tweet.
+# Exploratory Data Analysis and Adding Features.
 
 I suspect length of a tweet and number of strings used in a it can have
 some correlation with disasters, maybe people tend to use fewer words
@@ -312,7 +312,7 @@ x <- x %>%
          numWords = str_count(text, '\\w+'))
 ```
 
-# Remove punctuations
+## Remove punctuations
 
 ```{r removePunctuations}
 x <- x %>%
@@ -320,13 +320,13 @@ x <- x %>%
          text = str_trim(stripWhitespace(text)))
 ```
 
-# Tokenize the dataset
+## Tokenize the dataset
 
 ```{r tokenize}
 x <- x %>% unnest_tokens(word, text, strip_punct = T)
 ```
 
-# Abbreviations and contraactions
+## Abbreviations and contraactions
 
 I used lists of abbreviations and contractions from some friends who
 were very kind and shared those with us on Kaggle. I put them in a
@@ -350,7 +350,7 @@ x <- x %>%
   unnest_tokens(word, word)
 ```
 
-# Remove stopwords
+## Removing stopwords
 
 I used tidytext *stop_words* dataset to remove all stop words from our
 training set.
@@ -360,7 +360,7 @@ x <- x %>%
   anti_join(stop_words, by=c("word" = "word"))
 ```
 
-# some more cleaning and processing
+## Some Further Cleaning and Processing
 
 ```{r cleaning__3}
 x <- x %>%
@@ -370,7 +370,7 @@ x <- x %>%
                            word, keyword))
 ```
 
-# Sentiments
+## Sentiments
 
 I used tidytext's sentiment dataset and added them (negative or
 positive) at the end of each tweet.
@@ -383,7 +383,7 @@ x <- x %>%
                             paste(sentence, sentiment, " "), sentence))
 ```
 
-# Words Frequency
+## Words Frequency
 
 Let's also take a quick look at top 50 frequently used keywords in the
 dataset.
@@ -454,7 +454,7 @@ xTest <- x %>%
   filter(!is.na(text))
 ```
 
-# Logistic Regression
+## Effect Evaluation Using Logistic Regression
 
 -   To see the possible association between number of strings, number of
     words, mentions, and youTube links. This is more of an effect size
@@ -472,7 +472,9 @@ We can see from the Logistic Regression model that the following
 variables have a statistically significant effect on the outcome
 variable (p = 0.05): \* youTube \* mentions \* numStrings \* mentions
 
-# Building the model
+# Model Development and Anlysis
+
+## Text Vectorization
 
 ```{r textVectorizer, include= F}
 num_words <- nrow(x %>% filter(!duplicated(word))) + 1
@@ -493,6 +495,7 @@ Let's just quickly look at one document
 text_vectorization(matrix(xTrain$text[1995], ncol = 1))
 ```
 
+## Design Text Layer
 ```{r textLayer}
 inputText <- layer_input(shape=c(1), dtype="string")
 
@@ -508,6 +511,8 @@ outputText <- inputText %>%
 textModel <- keras_model(inputText, outputText)
 ```
 
+
+## Design Features Layer
 ```{r ohterLayer}
 otherLength <- ncol(xTrain[c("youTube", "mentions", "numStrings", "numWords",
                                       "numDigits", "expMark")])
@@ -524,6 +529,7 @@ outputOther <-
 otherModel <- keras_model(inputOther, outputOther)
 ```
 
+## Concatenating Layers
 ```{r concat}
 concat <- k_concatenate(c(outputText, outputOther))
 ```
@@ -533,6 +539,7 @@ finalOutput <- concat %>%
   layer_dense(units = 1, activation = "sigmoid")
 ```
 
+## Building the Model
 ```{r buildModel}
 model <- keras_model(inputs = list(inputText, inputOther),
                      outputs = finalOutput)
@@ -546,6 +553,8 @@ model %>% compile(
 )
 ```
 
+
+## Training the Model
 ```{r trainModel}
 aux <-  as.matrix(xTrain[c("youTube", "mentions", "numStrings", "numWords",
                              "numDigits", "expMark")])
