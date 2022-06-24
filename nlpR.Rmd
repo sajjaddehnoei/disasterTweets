@@ -1,8 +1,14 @@
 ---
-title: "nlpR"
+title: "Natural Language Processing with Disaster Tweets"
 author: "Sajjad"
-date: "3/21/2022"
-output: html_document
+date: "3/21/2021"
+output: 
+  html_document:
+    toc: true 
+    toc_depth: 3 
+    number_sections: true  
+    theme: united  
+    highlight: tango  
 ---
 
 ```{r setup, include=FALSE}
@@ -42,7 +48,21 @@ train <- read_csv("train.csv")
 test <- read_csv("test.csv")
 ```
 
-# Mislabelled data
+# Missing values
+```{r}
+nMiss <- function(x) {sum(is.na(x))}
+
+m <- as.data.frame(t(train %>% summarise_all(nMiss)))  %>%
+  rownames_to_column() %>%
+  rename(nMiss=V1, variable = rowname) %>%
+  mutate(pMiss = paste0(round(nMiss/nrow(train) * 100, 2),"%")) %>%
+  arrange(nMiss)
+
+knitr::kable(m, col.names = c("Variable", "Number of Missing",
+                              "Percentage of Missing (%)"))
+```
+
+# Mislabelled records
 Before proceeding with the analysis, I want to make sure there isn't any 
 mislabeled data (i.e., unique texts that are interpreted differently). 
 These can be harmful to the model.
@@ -62,7 +82,8 @@ a <- train %>%
   ggplot(aes(x = target, fill = target)) +
   geom_bar()+
   scale_fill_brewer(palette = "Set1")+
-  labs(x = "Target (0 or 1)", y = "", title = "Target distribution in the entire train set")+
+  labs(x = "Target (0 or 1)", y = "", 
+       title = "Target distribution in the entire train set")+
   coord_flip()
 
 b <- duplicateLabel %>%
@@ -70,7 +91,8 @@ b <- duplicateLabel %>%
   ggplot(aes(x = target, fill = target)) +
   geom_bar()+
   scale_fill_brewer(palette = "Set1") +
-  labs(x = "Target (0 or 1)", y = "", title = "Target distribution in misslabelled tweets")+
+  labs(x = "Target (0 or 1)", y = "", 
+       title = "Target distribution in misslabelled tweets")+
   coord_flip()
 
 ggarrange(a, b,
@@ -116,7 +138,7 @@ x <- x %>%
   mutate(text = str_trim(stripWhitespace(text)))
 ```
 
-# location
+## Location
 It seems to me that location was free-texted by the users. This makes it 
 difficult to interpret. Let's first look at the distribution of target by 
 whether a tweet has a location variable or not.
@@ -130,17 +152,17 @@ train %>%
   ggplot(aes(x=locationEmpty, y = n, fill = locationEmpty))+
   geom_bar(stat = "identity")+
   scale_fill_brewer(palette = "Set2")+
-  geom_text(aes(x = locationEmpty, y = n, label = round(n, 3)))+
-  labs(x = "n", y = "Location")+
+  geom_text(aes(x = locationEmpty, y = n+.02, label = round(n, 3)))+
+  labs(x = "", y = "Average target")+
   coord_flip()+
   theme_classic()
 ```
 
-I can see that the there's no significant difference between the the tweets 
+I can see that there's no significant difference between the the tweets 
 with and without location. I'm gonna ignore location moving forward. If it was 
 a real world project, I'd probably spend some time and clean location.
 
-# keyword
+## Keyword
 Here I've checked to make sure if keyword is in the text of the tweet or not. 
 If it's not, I've added it to at the end to make sure we can use it in as an 
 input to the model.
@@ -164,15 +186,13 @@ train %>%
   filter(row_number() <= 50) %>%
   ggplot(aes(x = reorder(keyword, n), y = n))+
     geom_bar(stat = "identity", fill = "#175ed1")+
-  coord_flip()+
-  theme_classic()
+  labs(x="Keyword", y="n")+
+  theme_classic()+
+  coord_flip()
 ```
 
-There are `r nrow(train %>% filter(str_detect(keyword, "url")))` tweets with 
-`r NA` keyword. We will get back to this shortly.
 
-
-# Explanation mark
+## Explanation mark
 I'm curious to know if tweets that have ! are more likely to be related to 
 a disaster. Let's just see:
 ```{r expMark}
